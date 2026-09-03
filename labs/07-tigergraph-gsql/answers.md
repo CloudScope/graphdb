@@ -1,0 +1,19 @@
+# Lab 7 — Answers & Explanations
+
+**1. `accountsReached("ACC-1001")`** → `{ACC-1002, ACC-1003}` — Bob and Carol, exactly Lab 4 exercise 1's answer. Worth noticing what changed and what didn't: the *result* is identical to the Cypher version's `*1..4` pattern, but here you can see each hop as its own named vertex set (`H1`, `A1`, `H2`, `A2`) instead of one compressed pattern — this is what Lesson 7 means by GSQL expanding the frontier one explicit step at a time. Cypher's planner does something similar internally (Lesson 5's `Expand` operator); GSQL just makes you write it.
+
+**2. `sharedDeviceAsFraud("txn-5")`** → `{txn-6}` — Frank → Alice, sharing `dev-0003` with the flagged `txn-5`, matching Lab 4 exercise 2. The `reverse_VIA_DEVICE` edge used to walk from `Device` back to `Txn` is exactly the reverse-edge declaration from `schema.gsql` — GSQL requires you to declare that a reverse traversal is possible when you define the edge type, where Cypher lets you traverse `-[:VIA_DEVICE]-` in either direction on any edge without any schema declaration at all. That's a second, smaller schema-first cost on top of Lesson 2's: not just "which types exist," but "which directions you're allowed to walk."
+
+**3. `totalSentPerAccount()`** → ranked `ACC-1005` (5000), `ACC-1006` (4800), `ACC-1003` (900), `ACC-1001` (500), `ACC-1004` (300), `ACC-1002` (200) — identical ranking to Lab 4 exercise 4. The interesting part is the query's shape, not its answer: `Accounts = {Account.*}` seeds from every account in the graph, not one. Compare that one line to `Start = {seed}` in query 1 — same `SELECT...FROM...ACCUM` machinery, same compiled query, the only difference is how many vertices you started from. That's Lesson 6's OLTP/OLAP line drawn inside a single query language instead of across two different tools (Cypher vs. Neo4j's separate GDS projection).
+
+---
+
+## Lesson 7 check-your-understanding — answers
+
+**1. Why does a cross-partition hop cost so much more than an in-memory pointer hop, and what does that imply about co-locating vertices?**
+
+An in-memory pointer hop is a memory access — tens to low-hundreds of nanoseconds, entirely inside one machine. A cross-partition hop has to serialize a request, send it over the network to another machine, have that machine look up the vertex and serialize a response, and send it back — a round trip that costs tens to hundreds of *microseconds* even on fast datacenter networking, a gap of three to four orders of magnitude. This implies a distributed graph engine should partition so that vertices likely to be traversed *together* — the same densely-connected neighborhood, the same community structure Lesson 6 named — end up on the same machine. It's the graph-native version of data locality: the cost of a wrong partitioning decision isn't paid once at load time, it's paid on every single query that happens to traverse across that cut.
+
+**2. What does compiling ahead of time (`INSTALL QUERY`) trade away versus Cypher's plan-per-execution model?**
+
+You gain raw execution speed on every subsequent run — the query is native, distributed code by the time anyone calls it, with no planning overhead paid per invocation, which matters a lot when the same query runs thousands of times a second in production. You give up iteration speed: every change to a GSQL query has to go through `INSTALL QUERY` (a real compile step, not instant) before you can run it again, where a Cypher query can be edited and rerun immediately because the planner just re-plans it fresh each time. It's the same tradeoff as compiled vs. interpreted languages generally, applied to queries instead of programs — Cypher optimizes for "I'm exploring, let me iterate fast"; GSQL optimizes for "this query will run millions of times, pay the compile cost once." That difference in what each language is optimizing for is worth sitting with going into Lesson 8, where Raphtory makes a third, different choice.

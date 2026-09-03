@@ -1,0 +1,31 @@
+// Lab 7 schema — the same financial network from Labs 4-5, defined in GSQL.
+//
+// Note the ordering constraint this forces on you, which Neo4j never did:
+// every vertex and edge TYPE must exist before you can insert a single
+// vertex or edge of that type. This is Lesson 2's "TigerGraph is
+// schema-first" claim, now something you have to satisfy to get anywhere.
+//
+// "Transaction" is avoided as a type name in case it collides with a
+// reserved word in your GSQL version - Txn is used instead throughout.
+//
+// Run with: gsql schema.gsql
+
+CREATE VERTEX Person (PRIMARY_ID name STRING)
+CREATE VERTEX Account (PRIMARY_ID id STRING, openedDate STRING)
+CREATE VERTEX Txn (PRIMARY_ID id STRING, amount INT, ts STRING, isFraud BOOL)
+CREATE VERTEX Device (PRIMARY_ID id STRING)
+
+CREATE DIRECTED EDGE OWNS (FROM Person, TO Account)
+CREATE DIRECTED EDGE SENT (FROM Account, TO Txn)
+CREATE DIRECTED EDGE RECEIVED_BY (FROM Txn, TO Account)
+CREATE DIRECTED EDGE VIA_DEVICE (FROM Txn, TO Device, REVERSE_EDGE "reverse_VIA_DEVICE")
+
+CREATE GRAPH FinancialNetwork (Person, Account, Txn, Device, OWNS, SENT, RECEIVED_BY, VIA_DEVICE)
+
+// If any CREATE statement above errors on your installed version, that's
+// expected friction, not a sign something's deeply wrong - GSQL syntax
+// shifts slightly release to release. Check the error message against
+// your version's docs and adjust; unlike Neo4j's MERGE-first workflow
+// (Lesson 2), there's no way to skip the schema step and iterate on data
+// first, so this is usually the first real wall a Cypher-first learner
+// hits.

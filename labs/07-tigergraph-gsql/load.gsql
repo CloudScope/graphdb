@@ -1,0 +1,69 @@
+// Lab 7 data load — the exact same six people, six accounts, four devices,
+// and six transactions as Lab 4's setup.cypher, ported vertex by vertex and
+// edge by edge. Nothing new here on purpose: the point of this file is to
+// feel the translation, not to learn a new dataset.
+//
+// Run with: gsql load.gsql
+
+USE GRAPH FinancialNetwork
+
+INSERT INTO Person VALUES ("Alice")
+INSERT INTO Person VALUES ("Bob")
+INSERT INTO Person VALUES ("Carol")
+INSERT INTO Person VALUES ("Dave")
+INSERT INTO Person VALUES ("Eve")
+INSERT INTO Person VALUES ("Frank")
+
+INSERT INTO Account VALUES ("ACC-1001", "2018-01-15")
+INSERT INTO Account VALUES ("ACC-1002", "2019-03-22")
+INSERT INTO Account VALUES ("ACC-1003", "2017-11-05")
+INSERT INTO Account VALUES ("ACC-1004", "2020-06-30")
+INSERT INTO Account VALUES ("ACC-1005", "2024-02-01")
+INSERT INTO Account VALUES ("ACC-1006", "2024-02-03")
+
+INSERT INTO OWNS VALUES ("Alice", "ACC-1001")
+INSERT INTO OWNS VALUES ("Bob", "ACC-1002")
+INSERT INTO OWNS VALUES ("Carol", "ACC-1003")
+INSERT INTO OWNS VALUES ("Dave", "ACC-1004")
+INSERT INTO OWNS VALUES ("Eve", "ACC-1005")
+INSERT INTO OWNS VALUES ("Frank", "ACC-1006")
+
+INSERT INTO Device VALUES ("dev-0001")
+INSERT INTO Device VALUES ("dev-0002")
+INSERT INTO Device VALUES ("dev-0003")
+INSERT INTO Device VALUES ("dev-0004")
+
+// A -> B -> C -> D: an ordinary chain of everyday transactions.
+INSERT INTO Txn VALUES ("txn-1", 500, "2026-08-01T09:00:00Z", false)
+INSERT INTO SENT VALUES ("ACC-1001", "txn-1")
+INSERT INTO RECEIVED_BY VALUES ("txn-1", "ACC-1002")
+INSERT INTO VIA_DEVICE VALUES ("txn-1", "dev-0001")
+
+INSERT INTO Txn VALUES ("txn-2", 200, "2026-08-02T11:30:00Z", false)
+INSERT INTO SENT VALUES ("ACC-1002", "txn-2")
+INSERT INTO RECEIVED_BY VALUES ("txn-2", "ACC-1003")
+INSERT INTO VIA_DEVICE VALUES ("txn-2", "dev-0002")
+
+INSERT INTO Txn VALUES ("txn-3", 900, "2026-08-03T14:15:00Z", false)
+INSERT INTO SENT VALUES ("ACC-1003", "txn-3")
+INSERT INTO RECEIVED_BY VALUES ("txn-3", "ACC-1004")
+INSERT INTO VIA_DEVICE VALUES ("txn-3", "dev-0001")
+
+// D -> E: bridges the ordinary chain into the fraud ring below.
+INSERT INTO Txn VALUES ("txn-4", 300, "2026-08-04T08:45:00Z", false)
+INSERT INTO SENT VALUES ("ACC-1004", "txn-4")
+INSERT INTO RECEIVED_BY VALUES ("txn-4", "ACC-1005")
+INSERT INTO VIA_DEVICE VALUES ("txn-4", "dev-0004")
+
+// E -> F: flagged fraudulent, made from dev-0003.
+INSERT INTO Txn VALUES ("txn-5", 5000, "2026-08-05T02:10:00Z", true)
+INSERT INTO SENT VALUES ("ACC-1005", "txn-5")
+INSERT INTO RECEIVED_BY VALUES ("txn-5", "ACC-1006")
+INSERT INTO VIA_DEVICE VALUES ("txn-5", "dev-0003")
+
+// F -> A: NOT flagged, but made from the SAME device as txn-5 - the
+// pattern the shared-device query below should surface.
+INSERT INTO Txn VALUES ("txn-6", 4800, "2026-08-05T02:40:00Z", false)
+INSERT INTO SENT VALUES ("ACC-1006", "txn-6")
+INSERT INTO RECEIVED_BY VALUES ("txn-6", "ACC-1001")
+INSERT INTO VIA_DEVICE VALUES ("txn-6", "dev-0003")

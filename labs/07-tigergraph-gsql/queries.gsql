@@ -1,0 +1,73 @@
+// Lab 7 queries — three of the Cypher queries from Labs 4-5, translated
+// into GSQL's compile-then-run, bulk-frontier-per-hop execution model
+// (Lesson 7). Each SELECT...FROM...ACCUM block below advances the ENTIRE
+// current vertex set one hop at a time, in parallel - that's the same
+// primitive whether the set holds one seed vertex or every Account in the
+// graph, which is the whole point Lesson 7 makes about GSQL serving OLTP
+// and OLAP from one language.
+//
+// GSQL syntax shifts release to release more than Cypher's does - treat
+// these as a starting draft. Install and run each with:
+//   gsql queries.gsql
+//   gsql "RUN QUERY accountsReached(\"ACC-1001\")"
+//   gsql "RUN QUERY sharedDeviceAsFraud(\"txn-5\")"
+//   gsql "RUN QUERY totalSentPerAccount()"
+
+USE GRAPH FinancialNetwork
+
+// 1. OLTP-shaped: accounts Alice's account sent to, within 2 account-hops.
+// Compare to Lab 4 exercise 1's Cypher: same question, but here the two
+// account-hops are two explicit, visible frontier expansions instead of
+// one *1..4 pattern - closer to what the engine is actually doing under
+// the hood either way (Lesson 5).
+CREATE QUERY accountsReached(VERTEX<Account> seed) FOR GRAPH FinancialNetwork SYNTAX v2 {
+  SetAccum<VERTEX<Account>> @@reached;
+
+  Start = {seed};
+  H1 = SELECT t FROM Start:s -(SENT:e)-> Txn:t;
+  A1 = SELECT a FROM H1:t -(RECEIVED_BY:e)-> Account:a
+       ACCUM @@reached += a;
+
+  H2 = SELECT t FROM A1:a -(SENT:e)-> Txn:t;
+  A2 = SELECT a FROM H2:t -(RECEIVED_BY:e)-> Account:a
+       WHERE a != seed
+       ACCUM @@reached += a;
+
+  PRINT @@reached;
+}
+
+// 2. OLTP-shaped: transactions sharing a device with a known-fraud
+// transaction. Same query as the worked example in Lesson 7.
+CREATE QUERY sharedDeviceAsFraud(VERTEX<Txn> seed) FOR GRAPH FinancialNetwork SYNTAX v2 {
+  SetAccum<VERTEX<Txn>> @@others;
+
+  Seed  = {seed};
+  Dev   = SELECT d
+          FROM Seed:s -(VIA_DEVICE:e)-> Device:d;
+  Other = SELECT t
+          FROM Dev:d -(reverse_VIA_DEVICE:e)- Txn:t
+          WHERE t != seed
+          ACCUM @@others += t;
+
+  PRINT @@others;
+}
+
+// 3. OLAP-flavored: total sent per account, across the WHOLE Account
+// vertex type - notice the seed here is {Account.*}, not one vertex. This
+// is Lesson 6's distinction made syntactically visible: the only thing
+// that changed between an anchored query and a whole-graph one is the size
+// of the starting set, not the query shape.
+CREATE QUERY totalSentPerAccount() FOR GRAPH FinancialNetwork SYNTAX v2 {
+  SumAccum<INT> @totalSent;
+
+  Accounts = {Account.*};
+  Txns = SELECT t FROM Accounts:a -(SENT:e)-> Txn:t
+         ACCUM a.@totalSent += t.amount;
+
+  Accounts = SELECT a FROM Accounts:a
+             ORDER BY a.@totalSent DESC;
+
+  PRINT Accounts;
+}
+
+INSTALL QUERY accountsReached, sharedDeviceAsFraud, totalSentPerAccount

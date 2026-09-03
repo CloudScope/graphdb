@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repository is currently empty — no source files, no commits, and no build/test tooling have been added yet. There is nothing to build, lint, or run.
+This is a personal course repo for learning graph databases from scratch, aimed at architectural judgment for a real project (not just theory). It is not a software project — there is no build/lint/test tooling, and none should be added unless hands-on labs specifically need it (e.g. a docker-compose for Neo4j).
 
-When code is added to this project, update this file with:
-- Build, lint, and test commands (including how to run a single test)
-- High-level architecture notes that require reading multiple files to piece together
+## Structure
 
-Re-run `/init` once the project has real structure to document.
+- `course/` — numbered lesson markdown files, indexed by `course/README.md` (curriculum table with status per lesson)
+- `labs/` — hands-on exercises per lesson, added starting with the Cypher/Neo4j lesson
+
+When resuming work here, check `course/README.md` for which lesson is current before starting new content.
