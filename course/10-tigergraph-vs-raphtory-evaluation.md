@@ -5,7 +5,7 @@ The course's introduction made a claim on day one, before either product had bee
 ## What each product actually is, restated precisely
 
 - **TigerGraph** — a distributed, disk-backed, transactional-*and*-analytical graph **database**, queried in GSQL, built to be a persistent system of record you run both live application queries and deep analytics against, at scale.
-- **Raphtory** — an embeddable, in-memory, Rust-based **temporal graph analytics engine**, driven from a Python-first API, built around ingesting a graph (often from somewhere else's durable storage) and running time-aware analysis over it — not a persistence-first server you'd point a production application's writes at.
+- **Raphtory** — an embeddable, in-memory, Rust-based **temporal graph analytics engine**, driven from a Python-first API, built around ingesting a graph (often from somewhere else's durable storage) and running time-aware analysis over it. It is *usually* embedded in your process rather than run as a service — though it does ship a server, which the correction below covers, because "it isn't a server" is too strong and someone will call you on it.
 
 Everything below is that one-sentence distinction, unpacked axis by axis.
 
@@ -13,23 +13,64 @@ Everything below is that one-sentence distinction, unpacked axis by axis.
 
 | Axis | TigerGraph | Raphtory | Built up in |
 |---|---|---|---|
-| What it is | A database — persistent system of record | An analytics engine — embedded in your process | Course intro, Lesson 9 |
+| What it is | A database — persistent system of record | An analytics engine, usually embedded in your process; optionally served over GraphQL | Course intro, Lesson 9 |
 | Schema | Schema-first: vertex/edge types declared before any data loads | Inferred from whatever you ingest | Lesson 2, Lesson 7 |
 | Query / programming model | GSQL — compiled, procedural, bulk-parallel over vertex sets | Python API — imperative, notebook-native | Lesson 3, Lesson 7 |
 | Execution model | Compiled ahead of time (`INSTALL QUERY`), distributed across a cluster | Runs in-process, single address space (parallelizable via more cores/processes) | Lesson 5, Lesson 7 |
-| Workload shape | OLTP *and* OLAP, natively, one engine | OLAP only — no live transactional write path | Lesson 6 |
+| Workload shape | OLTP *and* OLAP, natively, one engine | OLAP — writes exist (including remote ones) but there is no transactional write path to build an application on | Lesson 6 |
 | Time | A property you filter, same as any other engine here | First-class: windows, "as of" snapshots, time-respecting paths | Lesson 8 |
 | Scale model | Horizontal — add machines, repartition | Vertical, per-process — more memory/cores, or parallelize the job yourself | Lesson 7, Lesson 9 |
-| Consistency & durability | Distributed transactional guarantees; owns its own backup story | Durability lives upstream, in whatever fed it; the process itself isn't the system of record | Lesson 9 |
+| Consistency & durability | Distributed transactional guarantees; owns its own backup story | Graphs can be saved and reloaded, but there are no transactional guarantees and durability really lives upstream in whatever fed it | Lesson 9 |
 | Who it's built for | An application (and its users) making live queries | A person doing exploratory or scheduled analysis | Lesson 6, Lesson 8, Lesson 9 |
 
 Reading down that table, notice that almost nothing on it is actually a **strength/weakness** pair — most rows are a consequence of the same root choice (system of record vs. analytics engine) showing up in a different place. That's the concrete meaning of "not apples-to-apples": the differences aren't independent features you could mix and match, they're one architectural decision, refracted.
+
+## A correction: Raphtory does have a server
+
+Everything above is written as though Raphtory is purely a library you import.
+That was the honest reading when this course was drafted, and it is no longer
+quite right. Raphtory 0.17 ships `raphtory.graphql`, and it is a real server:
+
+```python
+from raphtory.graphql import GraphServer, RaphtoryClient
+
+GraphServer(work_dir="./graphs").run(port=1736)     # blocks, serves a browsable UI
+client = RaphtoryClient("http://localhost:1736")
+client.query('{ graph(path: "payments") { nodes { list { name } } } }')
+```
+
+Verified running: it binds a port, loads saved graphs from a working directory,
+keeps a graph cache with a TTL, answers GraphQL, and exposes `RemoteGraph` /
+`RemoteNode` / `RemoteUpdate` for **mutating graphs over the wire**. Alongside
+`save_to_file`, `to_parquet` and friends, that is more persistence and more of a
+service than "an analytics library" suggests.
+
+**So does the course's central claim survive?** Yes — but the claim has to be
+stated as a difference of *degree*, not of kind, and the degree is the whole
+argument:
+
+| | Raphtory's `GraphServer` | A system of record |
+|---|---|---|
+| Distribution | single process | sharded across a cluster |
+| Write guarantees | updates applied to a graph | transactional, with isolation and durability |
+| Failure story | server dies with its process | replication, failover, backup/restore |
+| Latency contract | none stated | an authorization-path budget you design against |
+
+The sharpest way to see it: **a Raphtory server lives inside the Python process
+that started it and dies with it.** Stop the script and the endpoint is gone —
+there is no daemon, nothing registered with the OS, nothing that survives the
+interpreter exiting. A database is a thing you operate; this is a thing you run.
+
+That is still a genuine architectural difference, and it is still the reason you
+would not point a payments application's writes at it. But "Raphtory is not a
+server" is a claim someone can disprove in one command, and an argument you can
+be embarrassed out of is worth replacing with one you cannot.
 
 ## The right question isn't "which is better" — it's "what am I actually building"
 
 A decision framework, in the same "write down the actual questions" spirit Lesson 4 taught for data modeling:
 
-1. **Does something need to query this graph live, from an application, with continuous writes?** If yes, you need a system of record — TigerGraph if the scale and OLTP-plus-OLAP-in-one-engine argument (Lesson 6, Lesson 7) actually justifies a distributed cluster; plain Neo4j if it doesn't yet (worth saying honestly: most projects never reach the scale where TigerGraph's distributed architecture pays for itself, and a single well-indexed Neo4j instance, Lessons 3–5, is the better call more often than the marketing for any distributed system will admit). Raphtory is not a candidate here at all — it was never built to be one (Lesson 9).
+1. **Does something need to query this graph live, from an application, with continuous writes?** If yes, you need a system of record — TigerGraph if the scale and OLTP-plus-OLAP-in-one-engine argument (Lesson 6, Lesson 7) actually justifies a distributed cluster; plain Neo4j if it doesn't yet (worth saying honestly: most projects never reach the scale where TigerGraph's distributed architecture pays for itself, and a single well-indexed Neo4j instance, Lessons 3–5, is the better call more often than the marketing for any distributed system will admit). Raphtory is not a candidate here — not because it cannot accept writes (it can — see the correction above) but because it offers none of the guarantees an application's write path needs (Lesson 9).
 2. **Is the actual question about the graph's structure or evolution as a whole** — centrality, communities, time-respecting paths, how something changed over months — **rather than about answering individual live queries?** If yes, and especially if time is a real dimension of the question (Lesson 8), Raphtory is built specifically for this in a way neither Neo4j's bolted-on GDS projection nor TigerGraph's general-purpose OLAP support was.
 3. **Do you need both — live serving *and* deep temporal analytics?** This is the case where "not apples-to-apples" stops being a caveat and becomes the answer: these two products aren't mutually exclusive choices for the same slot, because they were never competing for the same slot. The realistic architecture is TigerGraph (or Neo4j) as the system of record, with Raphtory pulling a snapshot or stream from it periodically to run the analysis neither of those engines does natively — Lesson 9's "workload isolation" pattern, extended across two different tools instead of one projection inside one tool.
 4. **Is the underlying shape of the problem even deep, relationship-heavy traversal in the first place?** Lesson 1's original question, still the first one worth asking: if most real queries are one or two hops, none of this course's later machinery — partitioning, temporal windows, compiled execution — is buying you anything a relational database with a couple of join tables wouldn't already give you more simply.
@@ -62,8 +103,9 @@ A cleaner variant exists when there's already an event stream upstream — Kafka
 
 ## Check your understanding — the real one
 
-1. Without re-reading the table above, write your own paragraph explaining why TigerGraph and Raphtory aren't apples-to-apples, using this course's vocabulary (system of record, OLTP/OLAP, schema strictness, time as a first-class dimension). If you can't do it without the table, that's a sign to reread Lessons 6–9 before calling this course finished.
-2. Think about the real project that prompted this course, back in Lesson 1's first check-your-understanding question. Walk it through the four-question framework above. Which axis actually decides the answer for your case — and did anything in this course change your answer from what you would have guessed before Lesson 1?
+1. Raphtory ships a GraphQL server that persists graphs and accepts remote writes. Does that make it a system of record? Write down where you would draw the line, and what you would need to see before pointing an application's writes at something. (This is the question the correction section above exists to make you answer for yourself.)
+2. Without re-reading the table above, write your own paragraph explaining why TigerGraph and Raphtory aren't apples-to-apples, using this course's vocabulary (system of record, OLTP/OLAP, schema strictness, time as a first-class dimension). If you can't do it without the table, that's a sign to reread Lessons 6–9 before calling this course finished.
+3. Think about the real project that prompted this course, back in Lesson 1's first check-your-understanding question. Walk it through the four-question framework above. Which axis actually decides the answer for your case — and did anything in this course change your answer from what you would have guessed before Lesson 1?
 
 ## The course, looking back
 

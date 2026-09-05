@@ -1,0 +1,271 @@
+# PaySentry configuration.
+#
+# Everything tunable lives here so that detection behaviour can be changed
+# without touching code — DESIGN.md §6.3's requirement that scoring stay
+# transparent and attributable depends on these weights being visible.
+
+generation:
+  currency: USD
+  # The regulatory reporting threshold that structuring (§4.3.1) hides under.
+  reporting_threshold: 10000
+  # Simulated clock. Data is generated backwards from this instant.
+  end_time: "2026-09-01T00:00:00Z"
+
+  # Devices outnumber accounts (~1.4x) so every account gets its own primary and
+  # optional secondary device with none left over. Accidental sharing then does
+  # not exist, and every shared device is one the generator planted — a household
+  # or a fraud ring. With devices scarcer than accounts, random collisions gave
+  # 12% of devices six or more distinct customers and the signal meant nothing.
+  profiles:
+    small:
+      customers: 300
+      accounts: 500
+      devices: 700
+      merchants: 60
+      transactions: 20000
+      span_days: 30
+    medium:
+      customers: 3000
+      accounts: 5000
+      devices: 7000
+      merchants: 400
+      transactions: 200000
+      span_days: 90
+    large:
+      customers: 30000
+      accounts: 50000
+      devices: 70000
+      merchants: 2500
+      transactions: 2000000
+      span_days: 180
+
+  background:
+    # Diurnal shape: relative volume weight per hour, local time, 0..23.
+    # Peaks 09:00-21:00, troughs overnight. A "3am is suspicious" rule must
+    # not be free money (DESIGN.md §4.2).
+    hourly_weights: [0.20, 0.12, 0.09, 0.08, 0.09, 0.15, 0.35, 0.70,
+                     1.00, 1.35, 1.45, 1.40, 1.30, 1.35, 1.40, 1.45,
+                     1.50, 1.55, 1.50, 1.35, 1.15, 0.90, 0.60, 0.35]
+    weekend_multiplier: 0.72
+    # Payment mix by *count*, must sum to 1.0. Retail dominates count while
+    # salary dominates value — an inverted mix would make "large amount" and
+    # "frequent counterparty" the same signal, which they are not in reality.
+    mix:
+      retail_purchase: 0.62
+      p2p_transfer: 0.26
+      bill_payment: 0.09
+      salary_credit: 0.03
+    # Log-normal amount distribution, in log-space.
+    amount_lognormal_mu: 3.6
+    amount_lognormal_sigma: 1.1
+    # Per-channel shift of the log-space mean. A salary and a coffee should not
+    # be drawn from the same distribution, or "large amount" becomes a useless
+    # signal and structuring's sub-threshold amounts stand out for the wrong
+    # reason.
+    amount_channel_mu_shift:
+      retail_purchase: -0.4
+      p2p_transfer: 0.0
+      bill_payment: 0.5
+      salary_credit: 4.2
+    # Values a "round" amount snaps to.
+    round_number_ladder: [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    amount_min: 1.0
+    amount_max: 250000.0
+    # Fraction of amounts snapped to a round number (100/500/1000/5000).
+    # Structuring must not be findable just by "amounts look round".
+    round_number_fraction: 0.22
+    # Legitimate accounts that incidentally look like fraud. These generate
+    # the false positives that make precision meaningful.
+    organic_near_patterns:
+      shared_device_families: 0.05   # fraction of accounts sharing a household device
+      family_size: {min: 2, max: 3}  # households stay small; fraud rings are 5-8
+      settle_up_triangles: 0.02      # housemates paying each other in a loop
+      seasonal_dormancy: 0.04        # legitimately dormant then returning
+      # A legitimate return-from-dormancy burst stays under the fraud threshold,
+      # so the two populations overlap near the boundary instead of separating
+      # cleanly. That overlap is what makes precision a real measurement.
+      seasonal_burst_txns: {min: 3, max: 9}
+    # Accounts that settle merchant traffic. Must exceed the merchant count.
+    business_account_fraction: 0.15
+    # Size of an account's P2P social neighbourhood.
+    contacts_per_account: {min: 3, max: 8}
+    billers_per_account: {min: 1, max: 5}
+    employed_fraction: 0.62
+    # Recurring cadence in days. Not everyone is paid monthly, and a 30-day
+    # span would otherwise admit exactly one salary per account — which caps
+    # recurring traffic far below any realistic share of the mix.
+    salary_periods: [7, 14, 30]
+    salary_period_weights: [0.35, 0.30, 0.35]
+    bill_periods: [7, 14, 30]
+    bill_period_weights: [0.25, 0.10, 0.65]
+
+  typologies:
+    # Ring/instance counts per profile.
+    structuring:
+      rings: {small: 3, medium: 25, large: 200}
+      mules_per_ring: {min: 8, max: 15}
+      window_hours: 48
+      # Each transfer sits this far below the reporting threshold.
+      under_threshold_pct: {min: 0.02, max: 0.12}
+    circular_layering:
+      rings: {small: 3, medium: 22, large: 180}
+      hops: {min: 4, max: 6}
+      window_hours: 72
+      # Fee skim: each hop retains this fraction of the previous amount.
+      retention: {min: 0.90, max: 0.98}
+      # Decoy cycles: structurally identical, timestamps out of order, so
+      # money could never actually have flowed. A static cycle query fires on
+      # these; a time-respecting one must not. DESIGN.md §4.3.2 — this ratio
+      # is what makes the central precision comparison possible.
+      decoy_ratio: 1.0
+    mule_fan_in_out:
+      rings: {small: 4, medium: 30, large: 240}
+      sources: {min: 5, max: 12}
+      max_holding_hours: 24
+      forward_fraction: {min: 0.85, max: 0.97}
+    device_sharing_ring:
+      rings: {small: 3, medium: 24, large: 190}
+      accounts_per_ring: {min: 5, max: 8}
+      devices_per_ring: {min: 1, max: 2}
+    dormant_burst:
+      rings: {small: 4, medium: 28, large: 220}
+      # Profile-scaled: a 180-day dormancy is not observable inside a 30-day
+      # span. The gap must fit within the generated window with activity on
+      # both sides of it, or the pattern is invisible rather than subtle.
+      dormancy_days_min: {small: 14, medium: 45, large: 120}
+      burst_hours: 6
+      burst_txn_count: {min: 20, max: 45}
+
+detection:
+  # ---- Hot path (TigerGraph / LocalStore), DESIGN.md §5 ----
+  hot_path:
+    shared_device_hops: 2
+    shared_device_risk_floor: 60.0     # peer risk_score that counts as risky
+    counterparty_hops: 2
+    # Work bounds for the 2-hop counterparty walk. An authorization path must do
+    # bounded work per request, so the neighbourhood expansion is capped rather
+    # than allowed to grow with an account's history. Without these the check
+    # cost 30ms/txn against 0.08ms for every other check, and replay throughput
+    # collapsed from 17,555/s to ~50/s once risk scores existed.
+    counterparty_max_fanout: 64
+    counterparty_max_neighbourhood: 512
+    velocity_1h_count: 8
+    velocity_24h_count: 30
+    velocity_24h_amount: 50000
+    fan_out_window_hours: 48
+    fan_out_distinct_recipients: 8
+    # An amount within this fraction below the reporting threshold is
+    # "suspiciously close to the line".
+    near_threshold_band: 0.12
+    fan_out_near_threshold_count: 4
+    # Risk scores older than this are discounted — DESIGN.md §7 rule 3.
+    risk_score_max_age_hours: 168
+    # Device sharing: how many *distinct customers* on one device is normal.
+    # Households are 2-3 (see background.organic_near_patterns.family_size) and
+    # must score zero; fraud rings are 5-8. The gap between these two numbers is
+    # the entire discriminating power of this check.
+    device_share_customers_ok: 3
+    device_share_customers_alarm: 6
+
+    # Hot-path signal weights. Kept separate from the warm-path weights below
+    # so each engine's contribution to a score stays attributable (DESIGN.md §8).
+    hot_weights:
+      # Must exceed decisions.review_at on its own: device sharing across
+      # unrelated customers is the hot path's signature capability, and at 35
+      # against a review threshold of 40 a device ring could never raise a case
+      # by itself — which showed up as 0% recall on device_sharing_ring.
+      shared_device: 45.0
+      counterparty_risk: 30.0
+      velocity: 15.0
+      fan_out_burst: 20.0
+      near_threshold: 10.0
+
+  # ---- Warm path (Raphtory), DESIGN.md §6.2 ----
+  temporal:
+    lookback_days: 90
+    cycle_max_hops: 6
+    cycle_window_hours: 72
+    cycle_step_hours: 24
+    # A generic layering signature: money moves on, minus a fee. Deliberately
+    # wider than the band the generator plants (0.90-0.98) so the detector is
+    # not handed its own answer.
+    cycle_retention_band: {min: 0.50, max: 1.05}
+    fan_in_out_window: "24h"
+    fan_in_out_forward_floor: 0.85
+    fan_in_out_min_sources: 5
+    fan_in_out_max_destinations: 4
+    # Slightly more permissive than the planted gap above, so the detector is
+    # not handed the exact generation parameter.
+    dormancy_gap_days: {small: 10, medium: 35, large: 90}
+    dormancy_burst_window: "6h"
+    dormancy_burst_min_txns: 20
+    rolling_window: "24h"
+    rolling_step: "6h"
+    pagerank_spike_sigma: 4.0
+    # PageRank over short windows is inherently spiky: on this data the median
+    # account already scores z=18, so no threshold separates anything. Treated
+    # as a ranking instead — "the most anomalous accounts this period", which is
+    # how such a signal is actually used in triage.
+    pagerank_top_fraction: 0.02
+    pagerank_top_floor: 10
+    # Run-to-run variation in PageRank comes from parallel float summation, not
+    # from loose convergence: pinned to one thread (see analyze --threads) the
+    # default settings are already reproducible. Tightening convergence as well
+    # cost 941ms per window against 59ms and bought nothing — 365s of a 370s
+    # run on the medium profile. Left at the default.
+    pagerank_iterations: 20
+    pagerank_max_diff: null
+    # An account must actually be active across several windows before a "spike"
+    # means anything. Without this, an account seen in one window and absent from
+    # the rest has a baseline of zero and an unbounded z-score — which flagged
+    # 432 of 500 accounts on the first run.
+    pagerank_min_active_windows: 4
+    # label_propagation rather than louvain: louvain takes no seed and returns
+    # different communities on every run, which a reproducible evaluation cannot
+    # depend on. See docs/decisions/002-community-detection.md.
+    community_iterations: 40
+    # Above household size. Organic households are 2-3 accounts
+    # (background.organic_near_patterns.family_size); a group larger than that
+    # sharing hardware is worth a look. Same policy line the hot path draws at
+    # detection.hot_path.device_share_customers_ok.
+    community_min_size: 4
+    louvain_resolution: 1.0
+    louvain_max_community_size: 12
+    motif_delta: "12h"
+    # Seeded, not exhaustive (DESIGN.md §6.2) — cap on cycle-search seeds.
+    # Raised from 500: at 500 the ranked seed list did not reach most planted
+    # rings on the medium profile and cycle recall sat at 8/22. This is the
+    # cost/recall dial for the most expensive detector — see the run timings in
+    # the evaluation report.
+    max_cycle_seeds: 2500
+
+  # ---- Scoring, DESIGN.md §6.3 ----
+  # Transparent weighted sum. Deliberately not learned: attributing detection
+  # capability to an engine requires an interpretable scorer.
+  scoring:
+    weights:
+      time_respecting_cycle: 30.0
+      fan_in_out_holding: 22.0
+      dormant_burst: 18.0
+      pagerank_spike: 12.0
+      ring_cohesion: 10.0
+    max_score: 100.0
+  # Decision bands applied to the hot path's accumulated signal score.
+  decisions:
+    block_at: 75.0
+    review_at: 40.0
+
+runtime:
+  latency_budget_ms:
+    upsert_p95: 60
+    screen_p95: 70
+    total_p95: 150
+  savanna:
+    connect_timeout_s: 30
+    request_timeout_s: 60
+    # A free-tier workspace may be suspended between sessions (DESIGN.md §10.2).
+    cold_start_retries: 5
+    cold_start_backoff_s: 15
+  paths:
+    data_dir: data
+    reports_dir: reports

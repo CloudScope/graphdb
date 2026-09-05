@@ -1,0 +1,91 @@
+// PaySentry schema — TigerGraph.
+//
+// Mirrors the SQLite schema in store/local.py vertex-for-table and
+// edge-for-table, so the two stores answer the same questions from the same
+// shape of data and any difference in results is a difference in *engine*.
+//
+// Two modelling decisions carried over from DESIGN.md §3.1:
+//
+//   * Txn is a promoted VERTEX, not an edge. A transaction relates a sender, a
+//     receiver, a device and sometimes a merchant — a 4-way relationship, and an
+//     edge holds two endpoints. The promotion is forced, not stylistic.
+//   * USED_DEVICE is deliberate denormalization. It is fully derivable by
+//     walking Account -> SENT -> Txn -> VIA_DEVICE -> Device, and it exists
+//     because device sharing is the hottest screening query and re-deriving it
+//     on every authorization is the wrong trade.
+//
+// Timestamps are INT epoch milliseconds, not DATETIME. TigerGraph's INT is
+// 64-bit so they fit, range comparisons stay trivial, and it matches the one
+// canonical time representation the rest of the system uses (timeutil.py).
+// DATETIME would mean a string format conversion at every boundary for nothing.
+//
+// Reverse edges are declared wherever a query needs to traverse *into* a vertex.
+// GSQL follows a directed edge forwards only, so "who sent to this account"
+// needs RECEIVED as the reverse of RECEIVED_BY. Missing reverse edges are the
+// most common reason a hop silently returns nothing.
+
+USE GRAPH @graph@
+
+DROP JOB add_paysentry_schema
+
+CREATE SCHEMA_CHANGE JOB add_paysentry_schema FOR GRAPH @graph@ {
+  ADD VERTEX Customer (
+    PRIMARY_ID customer_id STRING,
+    name STRING,
+    country STRING,
+    kyc_level INT,
+    onboarded_at INT
+  ) WITH primary_id_as_attribute="true";
+
+  ADD VERTEX Account (
+    PRIMARY_ID account_id STRING,
+    customer_id STRING,
+    opened_at INT,
+    account_type STRING,
+    status STRING,
+    // -- write-back targets: the only attributes the warm path ever changes --
+    risk_score DOUBLE DEFAULT 0.0,
+    risk_reasons STRING DEFAULT "",
+    ring_id STRING DEFAULT "",
+    scored_at INT DEFAULT 0
+  ) WITH primary_id_as_attribute="true";
+
+  ADD VERTEX Device (
+    PRIMARY_ID device_id STRING,
+    fingerprint STRING,
+    os STRING,
+    first_seen INT
+  ) WITH primary_id_as_attribute="true";
+
+  ADD VERTEX Merchant (
+    PRIMARY_ID merchant_id STRING,
+    name STRING,
+    mcc STRING,
+    country STRING
+  ) WITH primary_id_as_attribute="true";
+
+  ADD VERTEX Txn (
+    PRIMARY_ID txn_id STRING,
+    amount DOUBLE,
+    ts INT,
+    channel STRING,
+    currency STRING,
+    status STRING
+  ) WITH primary_id_as_attribute="true";
+
+  ADD DIRECTED EDGE OWNS        (FROM Customer, TO Account) WITH REVERSE_EDGE="OWNED_BY";
+  ADD DIRECTED EDGE SENT        (FROM Account,  TO Txn)     WITH REVERSE_EDGE="SENT_BY";
+  ADD DIRECTED EDGE RECEIVED_BY (FROM Txn,      TO Account) WITH REVERSE_EDGE="RECEIVED";
+  ADD DIRECTED EDGE VIA_DEVICE  (FROM Txn,      TO Device)  WITH REVERSE_EDGE="DEVICE_USED_IN";
+  ADD DIRECTED EDGE AT_MERCHANT (FROM Txn,      TO Merchant) WITH REVERSE_EDGE="MERCHANT_OF";
+
+  // Undirected: "these two share hardware" has no natural direction.
+  ADD UNDIRECTED EDGE USED_DEVICE (
+    FROM Account, TO Device,
+    first_seen INT,
+    last_seen INT,
+    txn_count INT
+  );
+}
+
+RUN SCHEMA_CHANGE JOB add_paysentry_schema

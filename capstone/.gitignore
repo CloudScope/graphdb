@@ -1,0 +1,9 @@
+.venv/
+.env
+data/
+reports/*.json
+reports/*.jsonl
+__pycache__/
+*.egg-info/
+*.pyc
+.paysentry_cache/

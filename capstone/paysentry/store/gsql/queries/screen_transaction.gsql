@@ -1,0 +1,143 @@
+// Hot-path screening, GSQL side.
+//
+// One installed query rather than five, because the latency budget is a
+// round-trip budget: five REST calls to a cloud workspace costs five network
+// round trips, and on Savanna the network dominates the query (DESIGN.md §5.3).
+// The five checks are still five independent SELECT blocks — they are merged for
+// transport, not conflated.
+//
+// THE INVARIANT: no traversal may see past `as_of`. A screening decision is made
+// at authorization time, so every block is bounded above by the transaction's own
+// timestamp. Letting a query see the whole graph would leak the future into the
+// decision and produce an evaluation that looks excellent and means nothing.
+// Every WHERE below carries that bound; store/screening.py enforces the same rule
+// in SQL, and the two are checked against each other.
+//
+// Accumulators are the GSQL idiom Lesson 7 introduced: each SELECT visits a
+// frontier in bulk and folds results into a global accumulator, rather than
+// walking vertex by vertex.
+//
+// Edge patterns use GSQL **v2** syntax, where the direction marker sits inside
+// the parentheses -- `-(SENT>:e)-`, not v1's `-(SENT:e)->`. Multi-hop patterns
+// in a single FROM require v2, and mixing the two dialects fails with
+// "The query specifies V2 syntax but uses V1 here".
+
+USE GRAPH @graph@
+
+DROP QUERY screenTransaction
+
+CREATE QUERY screenTransaction(
+    VERTEX<Account> src_account,
+    VERTEX<Device>  device_id,
+    DOUBLE amount,
+    INT    as_of,
+    INT    window_1h,
+    INT    window_24h,
+    INT    window_fanout,
+    DOUBLE near_lo,
+    DOUBLE near_hi,
+    INT    max_fanout
+) FOR GRAPH @graph@ SYNTAX v2 {
+
+  // --- 1. shared device -----------------------------------------------
+  // Distinct *customers*, not accounts. One person with three accounts on one
+  // phone is unremarkable; six unrelated customers on one phone is a ring.
+  SetAccum<STRING> @@device_customers;
+  SetAccum<STRING> @@device_accounts;
+  MaxAccum<DOUBLE> @@device_peer_risk;
+
+  // --- 2. counterparty risk (consumes Raphtory's write-back) -----------
+  MaxAccum<DOUBLE> @@counterparty_peak;
+  SumAccum<INT>    @@counterparty_peers;
+  MaxAccum<STRING> @@counterparty_ring;
+
+  // --- 3. velocity ------------------------------------------------------
+  SumAccum<INT>    @@velocity_1h;
+  SumAccum<INT>    @@velocity_24h;
+  SumAccum<DOUBLE> @@velocity_amount;
+
+  // --- 4/5. fan-out and near-threshold ---------------------------------
+  SetAccum<STRING> @@fanout_recipients;
+  SumAccum<INT>    @@near_threshold_count;
+
+  // Typed VERTEX parameters rather than STRING ids: a vertex-set literal takes
+  // a vertex, and `{to_vertex(id, "Account")}` is not valid there. pyTigerGraph
+  // still passes the primary id from Python, so the caller is unchanged.
+  srcAcct = {src_account};
+  dev     = {device_id};
+
+  // 1. Who else has used this device, and is any of them already risky?
+  peers = SELECT a
+          FROM dev:d -(USED_DEVICE:e)- Account:a
+          WHERE e.first_seen <= as_of
+          ACCUM @@device_customers  += a.customer_id,
+                @@device_accounts   += a.account_id,
+                @@device_peer_risk  += a.risk_score;
+
+  // 3. Outbound volume in the trailing hour and day.
+  vel = SELECT t
+        FROM srcAcct:s -(SENT>:e)- Txn:t
+        WHERE t.ts <= as_of AND t.ts > as_of - window_24h
+        ACCUM @@velocity_24h    += 1,
+              @@velocity_amount += t.amount,
+              CASE WHEN t.ts > as_of - window_1h THEN @@velocity_1h += 1 END;
+
+  // 4/5. Distinct recipients, and payments hugging the reporting threshold.
+  fan = SELECT a
+        FROM srcAcct:s -(SENT>:e)- Txn:t -(RECEIVED_BY>:e2)- Account:a
+        WHERE t.ts <= as_of AND t.ts > as_of - window_fanout
+        ACCUM @@fanout_recipients += a.account_id,
+              CASE WHEN t.amount >= near_lo AND t.amount < near_hi
+                   THEN @@near_threshold_count += 1 END;
+
+  // 2. Two transfer hops out. This is where the feedback loop is consumed:
+  //    Account.risk_score is written only by Raphtory (DESIGN.md §7), so a ring
+  //    found by temporal analytics on Monday changes this decision on Tuesday —
+  //    with no analytics running on the authorization path.
+  //
+  //    The first hop is capped: an authorization must do bounded work per
+  //    request however much history an account has. The SQLite store applies the
+  //    same cap, so the two remain comparable.
+  // Outbound AND inbound: "who did I pay" and "who paid me" are both
+  // counterparties. The reverse edges declared in the schema are what make the
+  // inbound direction traversable at all — GSQL follows a directed edge forwards
+  // only. SQLite unions the same two directions.
+  hop1out = SELECT a
+            FROM srcAcct:s -(SENT>:e)- Txn:t -(RECEIVED_BY>:e2)- Account:a
+            WHERE t.ts <= as_of
+            LIMIT max_fanout;
+
+  hop1in  = SELECT a
+            FROM srcAcct:s -(RECEIVED>:e)- Txn:t -(SENT_BY>:e2)- Account:a
+            WHERE t.ts <= as_of
+            LIMIT max_fanout;
+
+  hop1 = hop1out UNION hop1in;
+
+  hop2 = SELECT a
+         FROM hop1:h -(SENT>:e)- Txn:t -(RECEIVED_BY>:e2)- Account:a
+         WHERE t.ts <= as_of;
+
+  nbrs = hop1 UNION hop2;
+
+  risky = SELECT a
+          FROM nbrs:a
+          WHERE a.risk_score > 0
+          ACCUM @@counterparty_peak  += a.risk_score,
+                @@counterparty_peers += 1,
+                @@counterparty_ring  += a.ring_id;
+
+  PRINT @@device_customers.size()   AS device_customers,
+        @@device_accounts.size()    AS device_accounts,
+        @@device_peer_risk          AS device_peer_risk,
+        @@counterparty_peak         AS counterparty_peak,
+        @@counterparty_peers        AS counterparty_peers,
+        @@counterparty_ring         AS counterparty_ring,
+        @@velocity_1h               AS velocity_1h,
+        @@velocity_24h              AS velocity_24h,
+        @@velocity_amount           AS velocity_amount,
+        @@fanout_recipients.size()  AS fanout_recipients,
+        @@near_threshold_count      AS near_threshold_count;
+}
+
+INSTALL QUERY screenTransaction

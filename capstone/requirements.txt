@@ -1,0 +1,11 @@
+# Direct dependencies, pinned. Both raphtory and pyTigerGraph have drifted
+# between releases before (see DESIGN.md §10.3) — exact pins are deliberate.
+raphtory==0.17.0
+pyTigerGraph==2.0.4
+pyarrow==25.0.1
+numpy==2.5.2
+PyYAML==6.0.3
+python-dotenv==1.2.3
+
+# Verified working on Python 3.13.2, 2026-09-05.
+# The CLI uses stdlib argparse — no click/typer/rich dependency by choice.

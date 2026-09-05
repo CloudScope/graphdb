@@ -11,7 +11,7 @@ Complete beginner to databases in general. No SQL background assumed — each le
 TigerGraph and Raphtory are **not apples-to-apples**:
 
 - **TigerGraph** — a distributed, disk-backed, transactional + analytical graph *database* with its own query language (GSQL). Built to be a persistent system of record you run queries against, at scale.
-- **Raphtory (by Pometry)** — an embeddable, in-memory, Rust-based **temporal graph analytics engine** with a Python-first API. Not a persistence-first server database — built around ingesting a graph and running time-aware analytics on it (time-travel through history, temporal motifs, evolving-graph algorithms).
+- **Raphtory (by Pometry)** — an embeddable, in-memory, Rust-based **temporal graph analytics engine** with a Python-first API. Built around ingesting a graph and running time-aware analytics on it (time-travel through history, temporal motifs, evolving-graph algorithms). It is not a persistence-first *system of record*, though it does ship a GraphQL server and can save and reload graphs — [Lesson 10](10-tigergraph-vs-raphtory-evaluation.md#a-correction-raphtory-does-have-a-server) draws that line precisely.
 
 Part of the point of this course is to get you to a place where you can articulate *that* distinction precisely, not just benchmark features side by side. The final lesson makes the comparison explicit; every lesson before it is building the vocabulary and mental models needed to make that comparison mean something.
 
@@ -33,3 +33,7 @@ Part of the point of this course is to get you to a place where you can articula
 ## Labs
 
 Hands-on exercises live in [`../labs`](../labs), one subfolder per lesson that has an exercise. Foundational labs (Lessons 3–5) use [Neo4j](https://neo4j.com). Later labs (7–8) touch TigerGraph Community Edition and Raphtory directly.
+
+## Capstone
+
+Lesson 10 ends on a claim — that TigerGraph and Raphtory aren't competing for the same slot, and the realistic architecture uses **both, doing different jobs**. [`../capstone`](../capstone) turns that claim into running code: **PaySentry**, a real-time payments fraud/AML platform with TigerGraph Savanna on the live screening path and Raphtory doing temporal analytics locally, wired into a closed feedback loop. Its evaluation harness then tries to falsify the claim by measuring, per fraud typology, what each engine can and cannot catch. See [`capstone/DESIGN.md`](../capstone/DESIGN.md) for the architecture and phase plan.

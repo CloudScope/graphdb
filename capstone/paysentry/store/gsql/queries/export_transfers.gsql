@@ -1,0 +1,45 @@
+// The TigerGraph -> Raphtory handoff (DESIGN.md §2).
+//
+// Flattens the promoted Txn vertex back into an account-to-account edge list,
+// which is the shape Raphtory's temporal model wants: one timestamped edge per
+// transfer, no node promotion, because the timestamp gives the event its
+// identity there (DESIGN.md §3.2).
+//
+// This is the whole of the raw-data path between the engines. Everything coming
+// back the other way is results only.
+
+USE GRAPH @graph@
+
+DROP QUERY exportTransfers
+
+CREATE QUERY exportTransfers(INT since, INT until) FOR GRAPH @graph@ SYNTAX v2 {
+  TYPEDEF TUPLE<STRING txn_id, STRING src_account, STRING dst_account,
+                INT ts, DOUBLE amount, STRING device_id, STRING channel> Transfer;
+  ListAccum<Transfer> @@transfers;
+  ListAccum<STRING> @dst;
+  ListAccum<STRING> @device;
+
+  txns = {Txn.*};
+
+  // Gather each transaction's receiver and device onto the Txn vertex first,
+  // then emit once. A single pass cannot reach both without re-traversing.
+  withDst = SELECT t
+            FROM txns:t -(RECEIVED_BY>:e)- Account:a
+            WHERE t.ts >= since AND t.ts < until
+            ACCUM t.@dst += a.account_id;
+
+  withDev = SELECT t
+            FROM withDst:t -(VIA_DEVICE>:e)- Device:d
+            ACCUM t.@device += d.device_id;
+
+  emit = SELECT a
+         FROM Account:a -(SENT>:e)- withDev:t
+         ACCUM @@transfers += Transfer(
+             t.txn_id, a.account_id,
+             t.@dst.get(0), t.ts, t.amount,
+             t.@device.get(0), t.channel);
+
+  PRINT @@transfers AS transfers;
+}
+
+INSTALL QUERY exportTransfers
